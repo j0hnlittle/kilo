@@ -1,5 +1,4 @@
-/* Kilo -- A very simple editor in less than 1-kilo lines of code (as counted
- *         by "cloc"). Does not depend on libcurses, directly emits VT100
+g`" *         by "cloc"). Does not depend on libcurses, directly emits VT100
  *         escapes on the terminal.
  *
  * -----------------------------------------------------------------------
@@ -51,6 +50,15 @@
 #include <fcntl.h>
 #include <time.h>
 #include <signal.h>
+
+/*****************************/
+/* Additions for micropython */
+/*****************************/
+#include "py/nlr.h"
+#include "py/obj.h"
+#include "py/runtime.h"
+#include "py/binary.h"
+//#include "portmodules.h"
 
 /* Syntax highlight types */
 #define HL_NORMAL 0
@@ -796,7 +804,7 @@ int editorOpen(char *filename) {
 
     E.dirty = 0;
     free(E.filename);
-    E.filename = strdup(filename);
+    E.filename = filename;
 
     fp = fopen(filename,"r");
     if (!fp) {
@@ -1284,6 +1292,47 @@ void initEditor(void) {
     signal(SIGWINCH, handleSigWinCh);
 }
 
+/*****************************/
+/* Additions for micropython */
+/*****************************/
+
+STATIC mp_obj_t kilo_edit(mp_obj_t what) {
+    char *filename = (char *)mp_obj_str_get_str(what);
+
+    initEditor();
+    editorSelectSyntaxHighlight((char *)filename);
+    editorOpen((char *)filename);
+    enableRawMode(STDIN_FILENO);
+    editorSetStatusMessage(
+        "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");
+    while(1) {
+        editorRefreshScreen();
+        int c = editorProcessKeypress(STDIN_FILENO);
+	if (c == 17) break;
+    }
+
+    editorAtExit();
+    return mp_const_none;
+}
+
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(kilo_hello_obj1, kilo_edit);
+
+STATIC const mp_map_elem_t kilo_globals_table[] = {
+    { MP_OBJ_NEW_QSTR(MP_QSTR___name__), MP_OBJ_NEW_QSTR(MP_QSTR_kilo) },
+    { MP_OBJ_NEW_QSTR(MP_QSTR_edit), (mp_obj_t)&kilo_hello_obj1 },
+};
+
+STATIC MP_DEFINE_CONST_DICT (
+    mp_module_kilo_globals,
+    kilo_globals_table
+);
+
+const mp_obj_module_t mp_module_kilo = {
+    .base = { &mp_type_module },
+    .globals = (mp_obj_dict_t*)&mp_module_kilo_globals,
+};
+
+/*
 int main(int argc, char **argv) {
     if (argc != 2) {
         fprintf(stderr,"Usage: kilo <filename>\n");
@@ -1303,3 +1352,4 @@ int main(int argc, char **argv) {
     }
     return 0;
 }
+*/
