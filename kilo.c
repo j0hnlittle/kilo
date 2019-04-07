@@ -34,8 +34,7 @@
 
 #define KILO_VERSION "0.0.1"
 
-#define _BSD_SOURCE
-#define _GNU_SOURCE
+#define _DEFAULT_SOURCE
 
 #include <termios.h>
 #include <stdlib.h>
@@ -50,6 +49,8 @@
 #include <unistd.h>
 #include <stdarg.h>
 #include <fcntl.h>
+#include <time.h>
+#include <signal.h>
 
 /* Syntax highlight types */
 #define HL_NORMAL 0
@@ -166,6 +167,17 @@ char *C_HL_keywords[] = {
         "struct","union","typedef","static","enum","class",
         /* C types */
         "int|","long|","double|","float|","char|","unsigned|","signed|",
+        "void|","uint32_t|","uint64_t|",NULL
+};
+
+ /* python */
+char *PY_HL_extensions[] = {".py","python",NULL};
+char *PY_HL_keywords[] = {
+        "def","if","while","for","break","return","continue","else","elif",
+        "True","False","class",
+        /* Python types */
+        "int|","str|","unicode|","dict|","float|","repr|","long|","eval|",
+        "tuple|","list|","set|","frozenset|","chr|","unichr|","ord|","hex|",
         "void|",NULL
 };
 
@@ -177,6 +189,12 @@ struct editorSyntax HLDB[] = {
         C_HL_extensions,
         C_HL_keywords,
         "//","/*","*/",
+        HL_HIGHLIGHT_STRINGS | HL_HIGHLIGHT_NUMBERS
+    },
+    {
+        PY_HL_extensions,
+        PY_HL_keywords,
+        "#","\"\"\"", "\"\"\"",
         HL_HIGHLIGHT_STRINGS | HL_HIGHLIGHT_NUMBERS
     }
 };
@@ -198,6 +216,7 @@ void disableRawMode(int fd) {
 /* Called at exit to avoid remaining in raw mode. */
 void editorAtExit(void) {
     disableRawMode(STDIN_FILENO);
+    printf("\033[2J\033[1;1H");
 }
 
 /* Raw mode: 1960 magic shit. */
@@ -240,7 +259,7 @@ int editorReadKey(int fd) {
     int nread;
     char c, seq[3];
     while ((nread = read(fd,&c,1)) == 0);
-    if (nread == -1) exit(1);
+    if (nread == -1) return -1;
 
     while(1) {
         switch(c) {
@@ -540,7 +559,7 @@ void editorSelectSyntaxHighlight(char *filename) {
 
 /* Update the rendered version and the syntax highlight of a row. */
 void editorUpdateRow(erow *row) {
-    int tabs = 0, nonprint = 0, j, idx;
+    int tabs = 0, j, idx;
 
    /* Create a version of the row we can directly print on the screen,
      * respecting tabs, substituting non printable characters with '?'. */
@@ -548,7 +567,7 @@ void editorUpdateRow(erow *row) {
     for (j = 0; j < row->size; j++)
         if (row->chars[j] == TAB) tabs++;
 
-    row->render = malloc(row->size + tabs*8 + nonprint*9 + 1);
+    row->render = malloc(row->size + tabs*8 + 1);
     idx = 0;
     for (j = 0; j < row->size; j++) {
         if (row->chars[j] == TAB) {
@@ -781,11 +800,7 @@ int editorOpen(char *filename) {
 
     fp = fopen(filename,"r");
     if (!fp) {
-        if (errno != ENOENT) {
-            perror("Opening file");
-            exit(1);
-        }
-        return 1;
+        return 0;
     }
 
     char *line = NULL;
@@ -998,6 +1013,7 @@ void editorFind(int fd) {
 #define FIND_RESTORE_HL do { \
     if (saved_hl) { \
         memcpy(E.row[saved_hl_line].hl,saved_hl, E.row[saved_hl_line].rsize); \
+	free(saved_hl); \
         saved_hl = NULL; \
     } \
 } while (0)
@@ -1160,7 +1176,7 @@ void editorMoveCursor(int key) {
 /* Process events arriving from the standard input, which is, the user
  * is typing stuff on the terminal. */
 #define KILO_QUIT_TIMES 3
-void editorProcessKeypress(int fd) {
+int editorProcessKeypress(int fd) {
     /* When the file is modified, requires Ctrl-q to be pressed N times
      * before actually quitting. */
     static int quit_times = KILO_QUIT_TIMES;
@@ -1180,9 +1196,8 @@ void editorProcessKeypress(int fd) {
             editorSetStatusMessage("WARNING!!! File has unsaved changes. "
                 "Press Ctrl-Q %d more times to quit.", quit_times);
             quit_times--;
-            return;
+            return -1;
         }
-        exit(0);
         break;
     case CTRL_S:        /* Ctrl-s */
         editorSave();
@@ -1227,10 +1242,32 @@ void editorProcessKeypress(int fd) {
     }
 
     quit_times = KILO_QUIT_TIMES; /* Reset it to the original value. */
+    return c;
 }
 
 int editorFileWasModified(void) {
     return E.dirty;
+}
+
+void updateWindowSize(void) {
+    if (getWindowSize(STDIN_FILENO,STDOUT_FILENO,
+                      &E.screenrows,&E.screencols) == -1) {
+        perror("Unable to query the screen for size (columns / rows)");
+	return;
+    }
+    E.screenrows -= 2; /* Get room for status bar. */
+    editorSetStatusMessage(
+        "New window size: %d %d",
+	E.screenrows, E.screencols);
+}
+
+void handleSigWinCh(int unused __attribute__((unused))) {
+    updateWindowSize();
+    if (E.cy >= E.screenrows)
+        E.cy = E.screenrows - 1;
+    if (E.cx >= E.screencols)
+        E.cx = E.screencols - 1;
+    editorRefreshScreen();
 }
 
 void initEditor(void) {
@@ -1243,13 +1280,8 @@ void initEditor(void) {
     E.dirty = 0;
     E.filename = NULL;
     E.syntax = NULL;
-    if (getWindowSize(STDIN_FILENO,STDOUT_FILENO,
-                      &E.screenrows,&E.screencols) == -1)
-    {
-        perror("Unable to query the screen for size (columns / rows)");
-        exit(1);
-    }
-    E.screenrows -= 2; /* Get room for status bar. */
+    updateWindowSize();
+    signal(SIGWINCH, handleSigWinCh);
 }
 
 int main(int argc, char **argv) {
@@ -1266,7 +1298,8 @@ int main(int argc, char **argv) {
         "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");
     while(1) {
         editorRefreshScreen();
-        editorProcessKeypress(STDIN_FILENO);
+        int c = editorProcessKeypress(STDIN_FILENO);
+	if (c == 17) break;
     }
     return 0;
 }
