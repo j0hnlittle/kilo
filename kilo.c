@@ -1,4 +1,5 @@
-g`" *         by "cloc"). Does not depend on libcurses, directly emits VT100
+/* Kilo -- A very simple editor in less than 1-kilo lines of code (as counted
+ *         by "cloc"). Does not depend on libcurses, directly emits VT100
  *         escapes on the terminal.
  *
  * -----------------------------------------------------------------------
@@ -1166,6 +1167,17 @@ void editorMoveCursor(int key) {
             }
         }
         break;
+    case HOME_KEY:
+        E.cx = 0;
+        E.coloff = 0;
+        break;
+    case END_KEY:
+        E.cx = E.row[filerow].size;
+        if (E.cx > E.screencols-1) {
+            E.coloff = E.cx-E.screencols+1;
+            E.cx = E.screencols-1;
+        }
+        break;
     }
     /* Fix cx if the current line has not enough chars. */
     filerow = E.rowoff+E.cy;
@@ -1231,7 +1243,8 @@ int editorProcessKeypress(int fd) {
                                             ARROW_DOWN);
         }
         break;
-
+    case HOME_KEY:
+    case END_KEY:
     case ARROW_UP:
     case ARROW_DOWN:
     case ARROW_LEFT:
