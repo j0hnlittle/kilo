@@ -52,6 +52,15 @@
 #include <time.h>
 #include <signal.h>
 
+/*****************************/
+/* Additions for micropython */
+/*****************************/
+#include "py/nlr.h"
+#include "py/obj.h"
+#include "py/runtime.h"
+#include "py/binary.h"
+//#include "portmodules.h"
+
 /* Syntax highlight types */
 #define HL_NORMAL 0
 #define HL_NONPRINT 1
@@ -414,55 +423,59 @@ void editorUpdateSyntax(erow *row) {
         in_comment = 1;
 
     while(*p) {
-        /* Handle // comments. */
-        if (prev_sep && *p == scs[0] && *(p+1) == scs[1]) {
-            /* From here to end is a comment */
-            memset(row->hl+i,HL_COMMENT,row->size-i);
-            return;
-        }
+        if (!in_string) {
+            /* Handle // comments. */
+            if (prev_sep && *p == scs[0] && *(p+1) == scs[1]) {
+                /* From here to end is a comment */
+                memset(row->hl+i,HL_COMMENT,row->rsize-i);
+                return;
+            }
 
-        /* Handle multi line comments. */
-        if (in_comment) {
-            row->hl[i] = HL_MLCOMMENT;
-            if (*p == mce[0] && *(p+1) == mce[1]) {
+            /* Handle multi line comments. */
+            if (in_comment) {
+                row->hl[i] = HL_MLCOMMENT;
+                if (*p == mce[0] && *(p+1) == mce[1]) {
+                    row->hl[i+1] = HL_MLCOMMENT;
+                    p += 2; i += 2;
+                    in_comment = 0;
+                    prev_sep = 1;
+                    continue;
+                } else {
+                    prev_sep = 0;
+                    p++; i++;
+                    continue;
+                }
+            } else if (*p == mcs[0] && *(p+1) == mcs[1]) {
+                row->hl[i] = HL_MLCOMMENT;
                 row->hl[i+1] = HL_MLCOMMENT;
                 p += 2; i += 2;
-                in_comment = 0;
-                prev_sep = 1;
-                continue;
-            } else {
+                in_comment = 1;
                 prev_sep = 0;
-                p++; i++;
                 continue;
             }
-        } else if (*p == mcs[0] && *(p+1) == mcs[1]) {
-            row->hl[i] = HL_MLCOMMENT;
-            row->hl[i+1] = HL_MLCOMMENT;
-            p += 2; i += 2;
-            in_comment = 1;
-            prev_sep = 0;
-            continue;
         }
 
-        /* Handle "" and '' */
-        if (in_string) {
-            row->hl[i] = HL_STRING;
-            if (*p == '\\') {
-                row->hl[i+1] = HL_STRING;
-                p += 2; i += 2;
-                prev_sep = 0;
-                continue;
-            }
-            if (*p == in_string) in_string = 0;
-            p++; i++;
-            continue;
-        } else {
-            if (*p == '"' || *p == '\'') {
-                in_string = *p;
+        if (!in_comment) {
+            /* Handle "" and '' */
+            if (in_string) {
                 row->hl[i] = HL_STRING;
+                if (*p == '\\') {
+                    row->hl[i+1] = HL_STRING;
+                    p += 2; i += 2;
+                    prev_sep = 0;
+                    continue;
+                }
+                if (*p == in_string) in_string = 0;
                 p++; i++;
-                prev_sep = 0;
                 continue;
+            } else {
+                if (*p == '"' || *p == '\'') {
+                    in_string = *p;
+                    row->hl[i] = HL_STRING;
+                    p++; i++;
+                    prev_sep = 0;
+                    continue;
+                }
             }
         }
 
@@ -622,7 +635,7 @@ void editorDelRow(int at) {
     row = E.row+at;
     editorFreeRow(row);
     memmove(E.row+at,E.row+at+1,sizeof(E.row[0])*(E.numrows-at-1));
-    for (int j = at; j < E.numrows-1; j++) E.row[j].idx++;
+    for (int j = at; j < E.numrows-1; j++) E.row[j].idx--;
     E.numrows--;
     E.dirty++;
 }
@@ -796,7 +809,7 @@ int editorOpen(char *filename) {
 
     E.dirty = 0;
     free(E.filename);
-    E.filename = strdup(filename);
+    E.filename = filename;
 
     fp = fopen(filename,"r");
     if (!fp) {
@@ -885,7 +898,7 @@ void editorRefreshScreen(void) {
             if (E.numrows == 0 && y == E.screenrows/3) {
                 char welcome[80];
                 int welcomelen = snprintf(welcome,sizeof(welcome),
-                    "Kilo editor -- verison %s\x1b[0K\r\n", KILO_VERSION);
+                    "Kilo editor -- version %s\x1b[0K\r\n", KILO_VERSION);
                 int padding = (E.screencols-welcomelen)/2;
                 if (padding) {
                     abAppend(&ab,"~",1);
@@ -1158,6 +1171,17 @@ void editorMoveCursor(int key) {
             }
         }
         break;
+    case HOME_KEY:
+        E.cx = 0;
+        E.coloff = 0;
+        break;
+    case END_KEY:
+        E.cx = E.row[filerow].size;
+        if (E.cx > E.screencols-1) {
+            E.coloff = E.cx-E.screencols+1;
+            E.cx = E.screencols-1;
+        }
+        break;
     }
     /* Fix cx if the current line has not enough chars. */
     filerow = E.rowoff+E.cy;
@@ -1223,7 +1247,8 @@ int editorProcessKeypress(int fd) {
                                             ARROW_DOWN);
         }
         break;
-
+    case HOME_KEY:
+    case END_KEY:
     case ARROW_UP:
     case ARROW_DOWN:
     case ARROW_LEFT:
@@ -1284,6 +1309,47 @@ void initEditor(void) {
     signal(SIGWINCH, handleSigWinCh);
 }
 
+/*****************************/
+/* Additions for micropython */
+/*****************************/
+
+STATIC mp_obj_t kilo_edit(mp_obj_t what) {
+    char *filename = (char *)mp_obj_str_get_str(what);
+
+    initEditor();
+    editorSelectSyntaxHighlight((char *)filename);
+    editorOpen((char *)filename);
+    enableRawMode(STDIN_FILENO);
+    editorSetStatusMessage(
+        "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");
+    while(1) {
+        editorRefreshScreen();
+        int c = editorProcessKeypress(STDIN_FILENO);
+	if (c == 17) break;
+    }
+
+    editorAtExit();
+    return mp_const_none;
+}
+
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(kilo_hello_obj1, kilo_edit);
+
+STATIC const mp_map_elem_t kilo_globals_table[] = {
+    { MP_OBJ_NEW_QSTR(MP_QSTR___name__), MP_OBJ_NEW_QSTR(MP_QSTR_kilo) },
+    { MP_OBJ_NEW_QSTR(MP_QSTR_edit), (mp_obj_t)&kilo_hello_obj1 },
+};
+
+STATIC MP_DEFINE_CONST_DICT (
+    mp_module_kilo_globals,
+    kilo_globals_table
+);
+
+const mp_obj_module_t mp_module_kilo = {
+    .base = { &mp_type_module },
+    .globals = (mp_obj_dict_t*)&mp_module_kilo_globals,
+};
+
+/*
 int main(int argc, char **argv) {
     if (argc != 2) {
         fprintf(stderr,"Usage: kilo <filename>\n");
@@ -1303,3 +1369,4 @@ int main(int argc, char **argv) {
     }
     return 0;
 }
+*/
