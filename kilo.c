@@ -423,55 +423,59 @@ void editorUpdateSyntax(erow *row) {
         in_comment = 1;
 
     while(*p) {
-        /* Handle // comments. */
-        if (prev_sep && *p == scs[0] && *(p+1) == scs[1]) {
-            /* From here to end is a comment */
-            memset(row->hl+i,HL_COMMENT,row->size-i);
-            return;
-        }
+        if (!in_string) {
+            /* Handle // comments. */
+            if (prev_sep && *p == scs[0] && *(p+1) == scs[1]) {
+                /* From here to end is a comment */
+                memset(row->hl+i,HL_COMMENT,row->rsize-i);
+                return;
+            }
 
-        /* Handle multi line comments. */
-        if (in_comment) {
-            row->hl[i] = HL_MLCOMMENT;
-            if (*p == mce[0] && *(p+1) == mce[1]) {
+            /* Handle multi line comments. */
+            if (in_comment) {
+                row->hl[i] = HL_MLCOMMENT;
+                if (*p == mce[0] && *(p+1) == mce[1]) {
+                    row->hl[i+1] = HL_MLCOMMENT;
+                    p += 2; i += 2;
+                    in_comment = 0;
+                    prev_sep = 1;
+                    continue;
+                } else {
+                    prev_sep = 0;
+                    p++; i++;
+                    continue;
+                }
+            } else if (*p == mcs[0] && *(p+1) == mcs[1]) {
+                row->hl[i] = HL_MLCOMMENT;
                 row->hl[i+1] = HL_MLCOMMENT;
                 p += 2; i += 2;
-                in_comment = 0;
-                prev_sep = 1;
-                continue;
-            } else {
+                in_comment = 1;
                 prev_sep = 0;
-                p++; i++;
                 continue;
             }
-        } else if (*p == mcs[0] && *(p+1) == mcs[1]) {
-            row->hl[i] = HL_MLCOMMENT;
-            row->hl[i+1] = HL_MLCOMMENT;
-            p += 2; i += 2;
-            in_comment = 1;
-            prev_sep = 0;
-            continue;
         }
 
-        /* Handle "" and '' */
-        if (in_string) {
-            row->hl[i] = HL_STRING;
-            if (*p == '\\') {
-                row->hl[i+1] = HL_STRING;
-                p += 2; i += 2;
-                prev_sep = 0;
-                continue;
-            }
-            if (*p == in_string) in_string = 0;
-            p++; i++;
-            continue;
-        } else {
-            if (*p == '"' || *p == '\'') {
-                in_string = *p;
+        if (!in_comment) {
+            /* Handle "" and '' */
+            if (in_string) {
                 row->hl[i] = HL_STRING;
+                if (*p == '\\') {
+                    row->hl[i+1] = HL_STRING;
+                    p += 2; i += 2;
+                    prev_sep = 0;
+                    continue;
+                }
+                if (*p == in_string) in_string = 0;
                 p++; i++;
-                prev_sep = 0;
                 continue;
+            } else {
+                if (*p == '"' || *p == '\'') {
+                    in_string = *p;
+                    row->hl[i] = HL_STRING;
+                    p++; i++;
+                    prev_sep = 0;
+                    continue;
+                }
             }
         }
 
@@ -631,7 +635,7 @@ void editorDelRow(int at) {
     row = E.row+at;
     editorFreeRow(row);
     memmove(E.row+at,E.row+at+1,sizeof(E.row[0])*(E.numrows-at-1));
-    for (int j = at; j < E.numrows-1; j++) E.row[j].idx++;
+    for (int j = at; j < E.numrows-1; j++) E.row[j].idx--;
     E.numrows--;
     E.dirty++;
 }
@@ -894,7 +898,7 @@ void editorRefreshScreen(void) {
             if (E.numrows == 0 && y == E.screenrows/3) {
                 char welcome[80];
                 int welcomelen = snprintf(welcome,sizeof(welcome),
-                    "Kilo editor -- verison %s\x1b[0K\r\n", KILO_VERSION);
+                    "Kilo editor -- version %s\x1b[0K\r\n", KILO_VERSION);
                 int padding = (E.screencols-welcomelen)/2;
                 if (padding) {
                     abAppend(&ab,"~",1);
